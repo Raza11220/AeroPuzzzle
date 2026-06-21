@@ -1,7 +1,10 @@
 import cv2
 import math
+import shutil
 import time
+import tempfile
 from importlib.resources import files
+from pathlib import Path
 
 HAND_CONNECTIONS = [
     (0, 1), (1, 2), (2, 3), (3, 4), # Thumb
@@ -23,10 +26,31 @@ def _hand_scale(hand):
 def _get_model_path():
     """Resolve the path to the hand_landmarker.task model file
     using importlib.resources so it works after pip install."""
-    model_ref = files("aeropuzzle.assets").joinpath("hand_landmarker.task")
-    # as_posix() works for mediapipe on all platforms; if the resource
-    # is inside a zip/wheel, importlib extracts it to a temp path.
-    return str(model_ref)
+    package_ref = files("aeropuzzle.assets").joinpath("hand_landmarker.task")
+
+    cache_dir = Path(tempfile.gettempdir()) / "aeropuzzle"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cached_model_path = cache_dir / "hand_landmarker.task"
+
+    if cached_model_path.exists() and cached_model_path.stat().st_size > 0:
+        return str(cached_model_path)
+
+    try:
+        with package_ref.open("rb") as source, cached_model_path.open("wb") as target:
+            shutil.copyfileobj(source, target)
+        return str(cached_model_path)
+    except FileNotFoundError:
+        pass
+
+    fallback_path = Path(__file__).resolve().parent / "assets" / "hand_landmarker.task"
+    if fallback_path.exists():
+        with fallback_path.open("rb") as source, cached_model_path.open("wb") as target:
+            shutil.copyfileobj(source, target)
+        return str(cached_model_path)
+
+    raise FileNotFoundError(
+        "Unable to locate hand_landmarker.task in aeropuzzle.assets or the local assets folder"
+    )
 
 
 class HandTracker:
