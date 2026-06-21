@@ -6,6 +6,7 @@ __pycache__/
 # Distribution / packaging
 build/
 dist/
+app.spec
 *.egg-info/
 *.egg
 src/*.egg-info/
