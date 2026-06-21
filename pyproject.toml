@@ -30,6 +30,7 @@ dependencies = [
     "mediapipe>=0.10",
     "numpy>=1.24",
     "pillow>=10.0",
+    "pygame>=2.5",
 ]
 
 [project.scripts]

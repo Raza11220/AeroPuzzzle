@@ -4,8 +4,20 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 import cv2
 import time
 import random
+import threading
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
+
+try:
+    import pygame
+except ImportError:
+    pygame = None
+
+try:
+    import winsound
+except ImportError:
+    winsound = None
+
 from aeropuzzle.hand_tracking import HandTracker
 from aeropuzzle.maze import Puzzle
 
@@ -84,6 +96,89 @@ def draw_grid(img, x1, y1, x2, y2, rows=3, cols=3):
         cv2.line(img, (x1, y1 + i*cell_h), (x2, y1 + i*cell_h), (254, 242, 0), 2)
 
 
+class SoundEffects:
+    def __init__(self):
+        self.enabled = False
+        self.sounds = {}
+        self.backend = None
+
+        if pygame is None:
+            self._setup_winsound_fallback()
+            return
+
+        try:
+            pygame.mixer.init(frequency=22050, size=-16, channels=1, buffer=512)
+            self.sounds = {
+                "shuffle": self._tone(330, 120, 0.25),
+                "start": self._tone(523, 110, 0.30),
+                "grab": self._tone(659, 70, 0.30),
+                "drop": self._tone(392, 90, 0.28),
+                "swap": self._tone(784, 120, 0.35),
+                "solve": self._tone(988, 220, 0.40),
+            }
+            self.backend = "pygame"
+            self.enabled = True
+        except Exception:
+            self._setup_winsound_fallback()
+
+    def _setup_winsound_fallback(self):
+        if winsound is not None:
+            self.backend = "winsound"
+            self.enabled = True
+        else:
+            self.enabled = False
+            self.backend = None
+
+    def _tone(self, frequency, duration_ms, volume):
+        sample_rate = 22050
+        sample_count = max(1, int(sample_rate * duration_ms / 1000.0))
+        t = np.linspace(0, duration_ms / 1000.0, sample_count, endpoint=False)
+        wave = np.sin(2.0 * np.pi * frequency * t)
+
+        attack = max(1, int(sample_count * 0.08))
+        release = max(1, int(sample_count * 0.18))
+        envelope = np.ones(sample_count)
+        envelope[:attack] = np.linspace(0.0, 1.0, attack, endpoint=False)
+        envelope[-release:] = np.linspace(1.0, 0.0, release, endpoint=False)
+
+        samples = np.int16(wave * envelope * volume * 32767)
+        return pygame.sndarray.make_sound(samples)
+
+    def _winsound_pattern(self, name):
+        patterns = {
+            "shuffle": [(330, 70), (440, 70)],
+            "start": [(523, 120)],
+            "grab": [(659, 60)],
+            "drop": [(392, 80)],
+            "swap": [(784, 90)],
+            "solve": [(988, 120), (1318, 140)],
+        }
+
+        return patterns.get(name, [])
+
+    def _play_winsound(self, name):
+        if winsound is None:
+            return
+
+        def runner():
+            for frequency, duration in self._winsound_pattern(name):
+                try:
+                    winsound.Beep(frequency, duration)
+                except Exception:
+                    break
+
+        threading.Thread(target=runner, daemon=True).start()
+
+    def play(self, name):
+        if not self.enabled:
+            return
+
+        if self.backend == "pygame" and name in self.sounds:
+            self.sounds[name].play()
+        elif self.backend == "winsound":
+            self._play_winsound(name)
+
+
 # ================= MAIN ENTRY POINT =================
 def main():
     # ================= CAMERA =================
@@ -96,6 +191,7 @@ def main():
 
     tracker = HandTracker()
     puzzle = Puzzle(3)
+    sound = SoundEffects()
 
     mode = "camera"
 
@@ -185,6 +281,7 @@ def main():
                             puzzle.create(crop)
                             shuffling = True
                             shuffle_start = time.time()
+                            sound.play("shuffle")
                             mode = "puzzle"
                             start_time = None
 
@@ -238,6 +335,7 @@ def main():
                 else:
                     shuffling = False
                     start_time = time.time()
+                    sound.play("start")
 
             # ===== INTERACTION =====
             if not shuffling and detected:
@@ -252,6 +350,7 @@ def main():
                                 drag_src_idx = idx
                                 puzzle.selected = idx
                                 dragging = True
+                                sound.play("grab")
 
                 # --- PINCH RELEASE: drop the tile ---
                 elif not pinch and prev_pinch:
@@ -262,6 +361,14 @@ def main():
                             idx2 = puzzle.get_index(lx, ly)
                             if idx2 is not None:
                                 puzzle.swap(drag_src_idx, idx2)
+                                if idx2 == drag_src_idx:
+                                    sound.play("drop")
+                                else:
+                                    sound.play("swap")
+                            else:
+                                sound.play("drop")
+                        else:
+                            sound.play("drop")
 
                         puzzle.selected = None
                         drag_src_idx = None
@@ -270,6 +377,7 @@ def main():
                         if not solved and puzzle.is_solved(puzzle.original_tiles):
                             solved = True
                             end_time = time.time()
+                            sound.play("solve")
 
             prev_pinch = pinch
 
