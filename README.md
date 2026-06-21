@@ -127,7 +127,6 @@ AeroPuzzle/
 │
 ├── pyproject.toml
 ├── README.md
-└── LICENSE
 ```
 
 ---
