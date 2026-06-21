@@ -3,7 +3,6 @@ import math
 import shutil
 import time
 import tempfile
-from importlib.resources import files
 from pathlib import Path
 
 HAND_CONNECTIONS = [
@@ -24,9 +23,20 @@ def _hand_scale(hand):
 
 
 def _get_model_path():
-    """Resolve the path to the hand_landmarker.task model file
-    using importlib.resources so it works after pip install."""
-    package_ref = files("aeropuzzle.assets").joinpath("hand_landmarker.task")
+    """Resolve the path to the hand_landmarker.task model file.
+
+    Returns None when the packaged resource is unavailable, allowing
+    the app to fall back to the built-in MediaPipe Hands backend.
+    """
+
+    package_ref = None
+
+    try:
+        from importlib.resources import files
+
+        package_ref = files("aeropuzzle.assets").joinpath("hand_landmarker.task")
+    except Exception:
+        package_ref = None
 
     cache_dir = Path(tempfile.gettempdir()) / "aeropuzzle"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -35,12 +45,13 @@ def _get_model_path():
     if cached_model_path.exists() and cached_model_path.stat().st_size > 0:
         return str(cached_model_path)
 
-    try:
-        with package_ref.open("rb") as source, cached_model_path.open("wb") as target:
-            shutil.copyfileobj(source, target)
-        return str(cached_model_path)
-    except FileNotFoundError:
-        pass
+    if package_ref is not None:
+        try:
+            with package_ref.open("rb") as source, cached_model_path.open("wb") as target:
+                shutil.copyfileobj(source, target)
+            return str(cached_model_path)
+        except FileNotFoundError:
+            pass
 
     fallback_path = Path(__file__).resolve().parent / "assets" / "hand_landmarker.task"
     if fallback_path.exists():
@@ -48,28 +59,61 @@ def _get_model_path():
             shutil.copyfileobj(source, target)
         return str(cached_model_path)
 
-    raise FileNotFoundError(
-        "Unable to locate hand_landmarker.task in aeropuzzle.assets or the local assets folder"
-    )
+    return None
+
+
+def _get_hand_label(results, idx):
+    label = "Right"
+    try:
+        handedness = None
+        if results is not None:
+            if hasattr(results, "handedness"):
+                handedness = results.handedness
+            elif hasattr(results, "multi_handedness"):
+                handedness = results.multi_handedness
+
+        if handedness and len(handedness) > idx:
+            label = handedness[idx][0].category_name
+    except Exception:
+        pass
+    return label
 
 
 class HandTracker:
     def __init__(self):
-        from mediapipe.tasks import python
-        from mediapipe.tasks.python import vision
-
-        model_path = _get_model_path()
-
-        base_options = python.BaseOptions(model_asset_path=model_path)
-        options = vision.HandLandmarkerOptions(
-            base_options=base_options,
-            num_hands=2,
-            min_hand_detection_confidence=0.5,
-            min_hand_presence_confidence=0.5,
-            min_tracking_confidence=0.5
-        )
-        self.detector = vision.HandLandmarker.create_from_options(options)
         self.results = None
+        self.backend = "tasks"
+        self.detector = None
+        self.hands = None
+
+        try:
+            from mediapipe.tasks import python
+            from mediapipe.tasks.python import vision
+
+            model_path = _get_model_path()
+
+            if model_path is None:
+                raise FileNotFoundError("No hand landmark model available")
+
+            base_options = python.BaseOptions(model_asset_path=model_path)
+            options = vision.HandLandmarkerOptions(
+                base_options=base_options,
+                num_hands=2,
+                min_hand_detection_confidence=0.5,
+                min_hand_presence_confidence=0.5,
+                min_tracking_confidence=0.5
+            )
+            self.detector = vision.HandLandmarker.create_from_options(options)
+        except Exception:
+            import mediapipe as mp
+
+            self.backend = "solutions"
+            self.hands = mp.solutions.hands.Hands(
+                static_image_mode=False,
+                max_num_hands=2,
+                min_detection_confidence=0.5,
+                min_tracking_confidence=0.5
+            )
 
         # Per-hand pinch state tracked by handedness ("Left", "Right")
         self._pinch_state = {"Left": False, "Right": False}
@@ -95,22 +139,43 @@ class HandTracker:
         self._beta = 5.0         # high = more responsive to fast moves (increased for less drag lag)
         self._d_cutoff = 1.0     # derivative filter cutoff
 
+    def _get_hand_landmarks(self):
+        if not self.results:
+            return []
+
+        if self.backend == "tasks":
+            return self.results.hand_landmarks or []
+
+        return self.results.multi_hand_landmarks or []
+
+    def _reset_pinches(self):
+        self._pinch_pos_inited = False
+        for label in ["Left", "Right"]:
+            self._pinch_state[label] = False
+            self._pinch_start_time[label] = 0.0
+
     # ------------------------------------------------------------------
     # Detection
     # ------------------------------------------------------------------
     def find_hands(self, frame):
         import mediapipe as mp
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
-        self.results = self.detector.detect(mp_image)
+
+        if self.backend == "tasks":
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+            self.results = self.detector.detect(mp_image)
+        else:
+            self.results = self.hands.process(rgb_frame)
 
     # ------------------------------------------------------------------
     # Drawing
     # ------------------------------------------------------------------
     def draw_hands(self, frame):
-        if self.results and self.results.hand_landmarks:
+        hand_landmarks_list = self._get_hand_landmarks()
+
+        if hand_landmarks_list:
             h, w, _ = frame.shape
-            for hand_landmarks in self.results.hand_landmarks:
+            for hand_landmarks in hand_landmarks_list:
                 for connection in HAND_CONNECTIONS:
                     p1 = hand_landmarks[connection[0]]
                     p2 = hand_landmarks[connection[1]]
@@ -135,12 +200,7 @@ class HandTracker:
         ratio = dist / scale
 
         # Resolve handedness label ("Left" or "Right")
-        label = "Right"
-        try:
-            if self.results and hasattr(self.results, "handedness") and len(self.results.handedness) > idx:
-                label = self.results.handedness[idx][0].category_name
-        except Exception:
-            pass
+        label = _get_hand_label(self.results, idx)
 
         if label not in self._pinch_state:
             self._pinch_state[label] = False
@@ -218,37 +278,32 @@ class HandTracker:
     def get_pinch(self):
         """Return (is_pinching, x, y) for the first hand that is pinching.
         Position is smoothed using a velocity-adaptive 1€ filter."""
-        if self.results and self.results.hand_landmarks:
+        hand_landmarks_list = self._get_hand_landmarks()
+
+        if hand_landmarks_list:
             # Reset state for hands that disappeared
             present_labels = []
-            for i in range(len(self.results.hand_landmarks[:2])):
-                try:
-                    if self.results.handedness and len(self.results.handedness) > i:
-                        present_labels.append(self.results.handedness[i][0].category_name)
-                except Exception:
-                    pass
+            for i in range(len(hand_landmarks_list[:2])):
+                present_labels.append(_get_hand_label(self.results, i))
             for label in ["Left", "Right"]:
                 if label not in present_labels:
                     self._pinch_state[label] = False
                     self._pinch_start_time[label] = 0.0
 
             # Check each hand
-            for i, hand in enumerate(self.results.hand_landmarks[:2]):
+            for i, hand in enumerate(hand_landmarks_list[:2]):
                 pinching, mx, my = self._update_pinch_for_hand(hand, i)
                 if pinching:
                     sx, sy = self._smooth_position(mx, my)
                     return True, sx, sy
 
             # No hand is pinching — reset filter so next pinch starts fresh
-            self._pinch_pos_inited = False
-            hand = self.results.hand_landmarks[0]
+            self._reset_pinches()
+            hand = hand_landmarks_list[0]
             return False, hand[8].x, hand[8].y
 
         # No hands detected at all
-        self._pinch_pos_inited = False
-        for label in ["Left", "Right"]:
-            self._pinch_state[label] = False
-            self._pinch_start_time[label] = 0.0
+        self._reset_pinches()
         return False, 0, 0
 
     # ------------------------------------------------------------------
@@ -256,15 +311,17 @@ class HandTracker:
     # ------------------------------------------------------------------
     def get_two_hand_indices(self):
         points = []
-        if self.results and self.results.hand_landmarks:
-            for hand in self.results.hand_landmarks:
+        hand_landmarks_list = self._get_hand_landmarks()
+        if hand_landmarks_list:
+            for hand in hand_landmarks_list:
                 points.append((hand[8].x, hand[8].y))
         if len(points) >= 2:
             return True, points[0], points[1]
         return False, (0, 0), (0, 0)
 
     def get_index_pos(self):
-        if self.results and self.results.hand_landmarks:
-            hand = self.results.hand_landmarks[0]
+        hand_landmarks_list = self._get_hand_landmarks()
+        if hand_landmarks_list:
+            hand = hand_landmarks_list[0]
             return True, hand[8].x, hand[8].y
         return False, 0, 0
