@@ -142,7 +142,7 @@ pip install aeropuzzle
 
 ## Author
 
-**Aarthi Suresh**
+**Ahmad Raza**
 
 Built to explore Computer Vision, MediaPipe hand tracking, and natural gesture-based interaction through an interactive puzzle game.
 # AeroPuzzzle
