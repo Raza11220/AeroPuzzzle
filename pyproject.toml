@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aeropuzzle"
+dynamic = ["version"]
+description = "A gesture-controlled sliding puzzle game using real-time hand tracking."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    { name = "Ahmad Raza" },
+]
+keywords = ["puzzle", "gesture", "hand-tracking", "mediapipe", "opencv", "computer-vision"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Games/Entertainment :: Puzzle Games",
+    "Topic :: Multimedia :: Video",
+]
+dependencies = [
+    "opencv-python>=4.8",
+    "mediapipe>=0.10",
+    "numpy>=1.24",
+    "pillow>=10.0",
+]
+
+[project.scripts]
+aeropuzzle = "aeropuzzle.main:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "aeropuzzle.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"aeropuzzle.assets" = ["**/*"]
